@@ -66,17 +66,36 @@ std::optional<QnnHtpDevice_Arch_t> FindSocModel(
 
 }  // namespace
 
-const char* LiteRtPluginSocManufacturer() { return kPluginManufacturer; }
-
-LiteRtParamIndex LiteRtPluginNumSupportedSocModels(
-    LiteRtCompilerPlugin compiler_plugin) {
-  return kNumPluginSocModels;
+LiteRtStatus LiteRtGetCompilerPluginVersion(LiteRtApiVersion* api_version) {
+  if (api_version == nullptr) {
+    return kLiteRtStatusErrorInvalidArgument;
+  }
+  api_version->major = LITERT_API_VERSION_MAJOR;
+  api_version->minor = LITERT_API_VERSION_MINOR;
+  api_version->patch = LITERT_API_VERSION_PATCH;
+  return kLiteRtStatusOk;
 }
 
-LiteRtStatus LiteRtPluginGetSupportedSocModel(
+const char* LiteRtGetCompilerPluginSocManufacturer() {
+  return kPluginManufacturer;
+}
+
+LiteRtStatus LiteRtGetNumCompilerPluginSupportedSocModels(
+    LiteRtCompilerPlugin compiler_plugin,
+    LiteRtParamIndex* num_supported_soc_models) {
+  if (!compiler_plugin || !num_supported_soc_models) {
+    return kLiteRtStatusErrorInvalidArgument;
+  }
+  *num_supported_soc_models = kNumPluginSocModels;
+  return kLiteRtStatusOk;
+}
+
+LiteRtStatus LiteRtGetCompilerPluginSupportedSocModel(
     LiteRtCompilerPlugin compiler_plugin, LiteRtParamIndex soc_model_idx,
     const char** soc_model_name) {
-  if (soc_model_idx < 0 || soc_model_idx >= kNumPluginSocModels) {
+  if (!compiler_plugin || !soc_model_name) {
+    return kLiteRtStatusErrorInvalidArgument;
+  } else if (soc_model_idx < 0 || soc_model_idx >= kNumPluginSocModels) {
     return kLiteRtStatusErrorInvalidArgument;
   }
   *soc_model_name = kPluginSocModels[soc_model_idx].first;
@@ -92,7 +111,7 @@ struct LiteRtCompiledResultT {
   std::vector<std::string> graph_names;
 };
 
-LiteRtStatus LiteRtCompiledResultGetByteCode(
+LiteRtStatus LiteRtGetCompiledResultByteCode(
     LiteRtCompiledResult compiled_result, const void** byte_code,
     size_t* byte_code_size) {
   *byte_code = compiled_result->context_bin.data();
@@ -100,7 +119,7 @@ LiteRtStatus LiteRtCompiledResultGetByteCode(
   return kLiteRtStatusOk;
 }
 
-LiteRtStatus LiteRtCompiledResultGetCallInfo(
+LiteRtStatus LiteRtGetCompiledResultCallInfo(
     LiteRtCompiledResult compiled_result, LiteRtParamIndex call_idx,
     const void** call_info, size_t* call_info_size) {
   if (call_idx >= compiled_result->graph_names.size()) {
@@ -113,13 +132,13 @@ LiteRtStatus LiteRtCompiledResultGetCallInfo(
   return kLiteRtStatusOk;
 }
 
-LiteRtStatus LiteRtCompiledResultGetNumCalls(
+LiteRtStatus LiteRtGetNumCompiledResultCalls(
     LiteRtCompiledResult compiled_result, LiteRtParamIndex* num_calls) {
   *num_calls = compiled_result->graph_names.size();
   return kLiteRtStatusOk;
 }
 
-void LiteRtCompiledResultDestroy(LiteRtCompiledResult compiled_result) {
+void LiteRtDestroyCompiledResult(LiteRtCompiledResult compiled_result) {
   delete compiled_result;
 }
 
@@ -130,13 +149,13 @@ void LiteRtCompiledResultDestroy(LiteRtCompiledResult compiled_result) {
 // Plugins can hold state.
 struct LiteRtCompilerPluginT {};
 
-LiteRtStatus LiteRtPluginInit(LiteRtCompilerPlugin* compiler_plugin) {
+LiteRtStatus LiteRtCreateCompilerPlugin(LiteRtCompilerPlugin* compiler_plugin) {
   auto* plugin = new LiteRtCompilerPluginT;
   *compiler_plugin = plugin;
   return kLiteRtStatusOk;
 }
 
-void LiteRtPluginDestroy(LiteRtCompilerPlugin compiler_plugin) {
+void LiteRtDestroyCompilerPlugin(LiteRtCompilerPlugin compiler_plugin) {
   delete compiler_plugin;
 }
 
@@ -156,9 +175,9 @@ bool IsOpSupported(LiteRtOp op) {
 
 }  // namespace
 
-LiteRtStatus LiteRtPluginPartitionModel(LiteRtCompilerPlugin compiler_plugin,
-                                        LiteRtModel model,
-                                        LiteRtOpList selected_ops) {
+LiteRtStatus LiteRtCompilerPluginPartitionModel(
+    LiteRtCompilerPlugin compiler_plugin, LiteRtModel model,
+    LiteRtOpList selected_ops) {
   LITERT_ASSIGN_OR_RETURN_STATUS(auto subgraph,
                                  graph_tools::GetSubgraph(model));
   LITERT_ASSIGN_OR_RETURN_STATUS(auto ops,
@@ -169,19 +188,26 @@ LiteRtStatus LiteRtPluginPartitionModel(LiteRtCompilerPlugin compiler_plugin,
       continue;
     }
 
-    LITERT_RETURN_STATUS_IF_NOT_OK(PushOp(selected_ops, op));
+    LITERT_RETURN_STATUS_IF_NOT_OK(LiteRtPushOp(selected_ops, op));
   }
 
   return kLiteRtStatusOk;
 }
 
-LiteRtStatus LiteRtPluginCompile(LiteRtCompilerPlugin compiler_plugin,
-                                 const char* soc_model,
-                                 LiteRtSubgraphArray partitions,
-                                 LiteRtParamIndex num_partitions,
-                                 LiteRtCompiledResult* compiled_result) {
+LiteRtStatus LiteRtCompilerPluginCompile(
+    LiteRtCompilerPlugin compiler_plugin, const char* soc_model,
+    LiteRtSubgraphArray partitions, LiteRtParamIndex num_partitions,
+    LiteRtCompiledResult* compiled_result) {
+  LITERT_LOG(LITERT_INFO, "Starting QNN Compilation for %d subgraphs",
+             num_partitions);
   auto opt_soc_model = FindSocModel(soc_model);
+  if (opt_soc_model.has_value()) {
+    LITERT_LOG(LITERT_INFO, "For arch: %d", opt_soc_model.value());
+  }
 
+  // Initialize SDK and load qnn shared libraries.
+
+  LITERT_LOG(LITERT_INFO, "%s", "Creating QNN manager");
   auto backend_configs = QnnManager::DefaultBackendConfigs();
   auto qnn_manager = QnnManager::Create(
       backend_configs, /*shared_library_dir=*/std::nullopt, opt_soc_model);
@@ -189,16 +215,24 @@ LiteRtStatus LiteRtPluginCompile(LiteRtCompilerPlugin compiler_plugin,
     LITERT_LOG(LITERT_ERROR, "%s", qnn_manager.status().message().data());
     return kLiteRtStatusErrorRuntimeFailure;
   }
+  LITERT_LOG(LITERT_INFO, "%s", "QNN manager created");
 
+  // Initialize context.
+
+  LITERT_LOG(LITERT_INFO, "%s", "Creating context handle");
   auto context_configs = QnnManager::DefaultContextConfigs();
   auto context_handle = (*qnn_manager)->CreateContextHandle(context_configs);
   if (!context_handle.ok()) {
     LITERT_LOG(LITERT_ERROR, "%s", context_handle.status().message().data());
     return kLiteRtStatusErrorRuntimeFailure;
   }
+  LITERT_LOG(LITERT_INFO, "%s", "Context handle created");
 
   auto result = std::make_unique<LiteRtCompiledResultT>();
 
+  // Compose graphs.
+
+  LITERT_LOG(LITERT_INFO, "%s", "Composing graph(s)");
   // TODO: Support multiple partitions in QCC plugin compile.
   LITERT_ENSURE_SUPPORTED(num_partitions, 1);
   {
@@ -207,10 +241,15 @@ LiteRtStatus LiteRtPluginCompile(LiteRtCompilerPlugin compiler_plugin,
     LITERT_RETURN_STATUS_IF_NOT_OK(litert::qnn::ComposeGraph(
         **qnn_manager, context_handle->get(), partitions[0], entry_point_name));
   }
+  LITERT_LOG(LITERT_INFO, "%s", "Graph composed");
 
+  // Generate context binary.
+
+  LITERT_LOG(LITERT_INFO, "%s", "Generating context binary");
   LITERT_RETURN_STATUS_IF_NOT_OK(
       (*qnn_manager)
           ->GenerateContextBinary(context_handle->get(), result->context_bin));
+  LITERT_LOG(LITERT_INFO, "%s", "Context binary generated");
 
   *compiled_result = result.release();
 

@@ -19,17 +19,21 @@ limitations under the License.
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <type_traits>
 #include <vector>
 
 #include "absl/functional/any_invocable.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
+#include "absl/strings/string_view.h"
 #include "third_party/gpus/cuda/include/cuda.h"
 #include "xla/stream_executor/bit_pattern.h"
 #include "xla/stream_executor/command_buffer.h"
 #include "xla/stream_executor/device_memory.h"
 #include "xla/stream_executor/gpu/gpu_command_buffer.h"
 #include "xla/stream_executor/gpu/gpu_executor.h"
+#include "xla/stream_executor/gpu/scoped_gpu_graph_exec.h"
+#include "xla/stream_executor/gpu/scoped_update_mode.h"
 #include "xla/stream_executor/kernel.h"
 #include "xla/stream_executor/launch_dim.h"
 #include "xla/stream_executor/stream.h"
@@ -43,23 +47,45 @@ class CudaCommandBuffer final : public GpuCommandBuffer {
   static absl::StatusOr<std::unique_ptr<CudaCommandBuffer>> Create(
       Mode mode, GpuExecutor* parent);
 
+  ~CudaCommandBuffer() override;
+
  private:
   CudaCommandBuffer(Mode mode, GpuExecutor* parent, CUgraph graph,
                     bool is_owned_graph)
-      : GpuCommandBuffer(mode, parent, graph, is_owned_graph),
-        parent_(parent) {}
+      : GpuCommandBuffer(mode, parent),
+        parent_(parent),
+        graph_(graph),
+        is_owned_graph_(is_owned_graph) {
+    VLOG(5) << "Created command buffer for graph " << graph_
+            << "; mode=" << ModeToString(mode)
+            << "; is_owned_graph=" << is_owned_graph_;
+  }
 
-  absl::StatusOr<SetIfConditionKernel*> GetSetIfConditionKernel() override;
-  absl::StatusOr<SetIfElseConditionKernel*> GetSetIfElseConditionKernel()
-      override;
-  absl::StatusOr<SetCaseConditionKernel*> GetSetCaseConditionKernel() override;
-  absl::StatusOr<SetForConditionKernel*> GetSetForConditionKernel() override;
-  absl::StatusOr<SetWhileConditionKernel*> GetSetWhileConditionKernel()
-      override;
-  absl::StatusOr<NoOpKernel*> GetNoOpKernel() override;
+  absl::Status LaunchSetIfConditionKernel(
+      ExecutionScopeId execution_scope_id,
+      GraphConditionalHandle if_conditional,
+      DeviceMemory<bool> predicate) override;
+  absl::Status LaunchSetIfElseConditionKernel(
+      ExecutionScopeId execution_scope_id,
+      GraphConditionalHandle if_conditional,
+      GraphConditionalHandle else_conditional,
+      DeviceMemory<bool> predicate) override;
+  absl::Status LaunchSetCaseConditionKernel(
+      ExecutionScopeId execution_scope_id, GraphConditionalHandles conditionals,
+      DeviceMemory<int32_t> index, int32_t batch_offset,
+      bool enable_conditional_default) override;
+  absl::Status LaunchSetForConditionKernel(ExecutionScopeId execution_scope_id,
+                                           GraphConditionalHandle conditional,
+                                           DeviceMemory<int32_t> loop_counter,
+                                           int32_t iterations) override;
+  absl::Status LaunchSetWhileConditionKernel(
+      ExecutionScopeId execution_scope_id, GraphConditionalHandle conditional,
+      DeviceMemory<bool> predicate) override;
+  absl::StatusOr<NoOpKernel*> GetNoOpKernel();
 
-  std::unique_ptr<GpuCommandBuffer> CreateNestedCommandBuffer(
-      CUgraph graph) override;
+  absl::StatusOr<ConditionalNodeResult> CreateConditionalNode(
+      const Dependencies& dependencies, GraphConditionalHandle conditional,
+      ConditionType type) override;
 
   absl::StatusOr<GraphNodeHandle> CreateMemsetNode(
       const Dependencies& dependencies, DeviceMemoryBase destination,
@@ -105,6 +131,48 @@ class CudaCommandBuffer final : public GpuCommandBuffer {
                                        CommandBuffer& root_command_buffer,
                                        bool enabled) override;
 
+  absl::Status LaunchGraph(Stream* stream) override;
+
+  absl::StatusOr<size_t> GetNodeCount() const override;
+
+  absl::Status PrepareFinalization() override;
+
+  absl::StatusOr<GraphConditionalHandle> CreateConditionalHandle() override;
+
+  absl::Status WriteGraphToDotFile(absl::string_view path) override;
+
+  absl::Status InstantiateGraph() override;
+
+  using ScopedCudaGraphExec = ScopedGraphExec<CUgraphExec>;
+  std::unique_ptr<ScopedUpdateMode> ActivateUpdateMode(
+      GpuCommandBuffer* nested_cmd_buffer) override;
+
+  absl::Status CheckCanBeUpdated() override;
+
+  absl::StatusOr<std::vector<GraphNodeHandle>> GetNodeDependencies(
+      GraphNodeHandle node) override;
+
+  // A signature of a device kernels updating conditional handle(s).
+  using SetIfConditionKernel =
+      TypedKernel<CUgraphConditionalHandle, DeviceMemory<bool>>;
+
+  using SetIfElseConditionKernel =
+      TypedKernel<CUgraphConditionalHandle, CUgraphConditionalHandle,
+                  DeviceMemory<bool>>;
+
+  using SetCaseConditionKernel =
+      TypedKernel<CUgraphConditionalHandle, CUgraphConditionalHandle,
+                  CUgraphConditionalHandle, CUgraphConditionalHandle,
+                  CUgraphConditionalHandle, CUgraphConditionalHandle,
+                  CUgraphConditionalHandle, CUgraphConditionalHandle,
+                  DeviceMemory<int32_t>, int32_t, int32_t, bool>;
+
+  using SetForConditionKernel =
+      TypedKernel<CUgraphConditionalHandle, DeviceMemory<int32_t>, int32_t>;
+
+  using SetWhileConditionKernel =
+      TypedKernel<CUgraphConditionalHandle, DeviceMemory<bool>>;
+
   // Lazy loaded auxiliary kernels required for building CUDA graphs (no-op
   // barriers, updating conditional handles, etc.).
   SetIfConditionKernel set_if_condition_kernel_;
@@ -115,6 +183,16 @@ class CudaCommandBuffer final : public GpuCommandBuffer {
   NoOpKernel noop_kernel_;
 
   GpuExecutor* parent_;
+
+  static_assert(std::is_pointer_v<CUgraph>, "CUgraph must be a pointer");
+  static_assert(std::is_pointer_v<CUgraphExec>,
+                "CUgraphExec must be a pointer");
+
+  CUgraph graph_ = nullptr;     // owned if `is_owned_graph_`
+  bool is_owned_graph_ = true;  // ownership of `graph_`
+
+  CUgraphExec exec_ = nullptr;       // owned if `is_owned_graph_exec_`
+  bool is_owned_graph_exec_ = true;  // ownership of `is_owned_graph_exec_`
 };
 
 }  // namespace stream_executor::gpu

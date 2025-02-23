@@ -90,6 +90,7 @@ cc_test(
     name = "dispatch_delegate_google_tensor_test",
     srcs = ["dispatch_delegate_google_tensor_test.cc"],
     data = [
+        "//tensorflow/lite/experimental/litert/test:testdata/shared_input_cpu_npu.tflite",
         "//tensorflow/lite/experimental/litert/vendors/google_tensor/dispatch:dispatch_api_so",
     ],
     linkopts = select({
@@ -111,15 +112,18 @@ cc_test(
         "//tensorflow/lite/experimental/litert/c:litert_compiled_model_options",
         "//tensorflow/lite/experimental/litert/c:litert_dispatch_delegate",
         "//tensorflow/lite/experimental/litert/c:litert_tensor_buffer",
+        "//tensorflow/lite/experimental/litert/cc:litert_buffer_ref",
         "//tensorflow/lite/experimental/litert/cc:litert_compiled_model",
         "//tensorflow/lite/experimental/litert/cc:litert_environment",
         "//tensorflow/lite/experimental/litert/cc:litert_event",
+        "//tensorflow/lite/experimental/litert/cc:litert_expected",
         "//tensorflow/lite/experimental/litert/cc:litert_model",
         "//tensorflow/lite/experimental/litert/cc:litert_tensor_buffer",
         "//tensorflow/lite/experimental/litert/core/model:model_buffer",
         "//tensorflow/lite/experimental/litert/core/util:flatbuffer_tools",
         "//tensorflow/lite/experimental/litert/runtime:external_litert_buffer_context",
         "//tensorflow/lite/experimental/litert/test:common",
+        "//tensorflow/lite/experimental/litert/test:matchers",
         "//tensorflow/lite/experimental/litert/test:simple_model_npu",
         "//tensorflow/lite/kernels:builtin_ops",
     ],
@@ -129,6 +133,7 @@ cc_test(
     name = "dispatch_delegate_qualcomm_test",
     srcs = ["dispatch_delegate_qualcomm_test.cc"],
     data = [
+        "//tensorflow/lite/experimental/litert/test:testdata/shared_input_cpu_npu.tflite",
         "//tensorflow/lite/experimental/litert/vendors/qualcomm/dispatch:dispatch_api_so",
     ],
     linkopts = select({
@@ -163,6 +168,7 @@ cc_test(
     name = "dispatch_delegate_mediatek_test",
     srcs = ["dispatch_delegate_mediatek_test.cc"],
     data = [
+        "//tensorflow/lite/experimental/litert/test:testdata/shared_input_cpu_npu.tflite",
         "//tensorflow/lite/experimental/litert/vendors/mediatek/dispatch:dispatch_api_so",
     ],
     linkopts = select({

@@ -94,6 +94,7 @@ cc_library(
         "//tensorflow/lite/experimental/litert/cc:litert_buffer_ref",
         "//tensorflow/lite/experimental/litert/core/model",
         "//tensorflow/lite/experimental/litert/core/model:model_load",
+        "//tensorflow/lite/experimental/litert/core/model:model_serialize",
         "@com_google_absl//absl/strings:string_view",
     ],
 )
@@ -346,6 +347,7 @@ cc_test(
         ":litert_accelerator_options",
         ":litert_common",
         "//tensorflow/lite/experimental/litert/core:accelerator",
+        "//tensorflow/lite/experimental/litert/test:matchers",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -381,6 +383,7 @@ cc_library(
     hdrs = ["litert_accelerator_registration.h"],
     deps = [
         ":litert_accelerator",
+        ":litert_accelerator_options",
         ":litert_common",
         ":litert_compiled_model",
         "//tensorflow/lite/experimental/litert/cc:litert_expected",
@@ -394,9 +397,9 @@ cc_test(
     srcs = ["litert_accelerator_registration_test.cc"],
     deps = [
         ":litert_accelerator",
+        ":litert_accelerator_options",
         ":litert_accelerator_registration",
         ":litert_common",
-        ":litert_compiled_model",
         ":litert_environment",
         "//tensorflow/lite/experimental/litert/core:accelerator",
         "@com_google_googletest//:gtest_main",

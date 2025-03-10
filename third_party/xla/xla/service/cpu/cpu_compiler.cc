@@ -84,6 +84,7 @@ limitations under the License.
 #include "xla/backends/cpu/codegen/jit_compiler.h"
 #include "xla/backends/cpu/codegen/object_loader.h"
 #include "xla/backends/cpu/codegen/target_machine_features.h"
+#include "xla/backends/cpu/constant_allocation.h"
 #include "xla/backends/cpu/runtime/function_library.h"
 #include "xla/backends/cpu/runtime/thunk.h"
 #include "xla/backends/cpu/runtime/thunk.pb.h"
@@ -140,11 +141,9 @@ limitations under the License.
 #include "xla/hlo/transforms/simplifiers/tuple_simplifier.h"
 #include "xla/hlo/transforms/simplifiers/zero_sized_hlo_elimination.h"
 #include "xla/hlo/transforms/while_loop_trip_count_annotator.h"
-#include "xla/literal.h"
 #include "xla/literal_pool.h"
 #include "xla/map_util.h"
 #include "xla/mlir_hlo/transforms/passes.h"
-#include "xla/primitive_util.h"
 #include "xla/service/all_reduce_promotion.h"
 #include "xla/service/all_to_all_decomposer.h"
 #include "xla/service/batched_gather_scatter_normalizer.h"
@@ -159,6 +158,7 @@ limitations under the License.
 #include "xla/service/copy_insertion.h"
 #include "xla/service/cpu/buffer_info_util.h"
 #include "xla/service/cpu/conv_canonicalization.h"
+#include "xla/service/cpu/cpu_aot_compilation_result.h"
 #include "xla/service/cpu/cpu_executable.h"
 #include "xla/service/cpu/cpu_instruction_fusion.h"
 #include "xla/service/cpu/cpu_layout_assignment.h"
@@ -170,6 +170,7 @@ limitations under the License.
 #include "xla/service/cpu/metrics.h"
 #include "xla/service/cpu/parallel_task_assignment.h"
 #include "xla/service/cpu/runtime_symbol_generator.h"
+#include "xla/service/cpu/small_while_loop_hoisting_pass.h"
 #include "xla/service/cpu/thunk_emitter.h"
 #include "xla/service/cpu_gpu_shape_verifier.h"
 #include "xla/service/dump.h"
@@ -310,40 +311,6 @@ ModuleComputationsTransitivelyContainCustomCall(const HloModule& module) {
 }  // namespace
 
 namespace cpu {
-using BufferInfo = cpu_function_runtime::BufferInfo;
-
-CpuAotCompilationOptions::CpuAotCompilationOptions(
-    std::string triple, std::string cpu_name, std::string features,
-    std::string entry_point_name, RelocationModel relocation_model)
-    : triple_(std::move(triple)),
-      cpu_name_(std::move(cpu_name)),
-      features_(std::move(features)),
-      entry_point_name_(std::move(entry_point_name)),
-      relocation_model_(relocation_model) {}
-
-CpuAotCompilationOptions::~CpuAotCompilationOptions() = default;
-
-se::Platform::Id CpuAotCompilationOptions::PlatformId() const {
-  return se::host::kHostPlatformId;
-}
-
-CpuAotCompilationResult::CpuAotCompilationResult(
-    ObjectFileData object_file_data, std::vector<BufferInfo> buffer_infos,
-    int64_t result_buffer_index, std::unique_ptr<HloModule> module,
-    std::unique_ptr<HloProfilePrinterData> hlo_profile_printer_data)
-    : object_file_data_(std::move(object_file_data)),
-      buffer_infos_(std::move(buffer_infos)),
-      result_buffer_index_(result_buffer_index),
-      module_(std::move(module)),
-      hlo_profile_printer_data_(std::move(hlo_profile_printer_data)) {}
-
-const HloModule* CpuAotCompilationResult::optimized_module() const {
-  return module_.get();
-}
-
-std::unique_ptr<HloModule> CpuAotCompilationResult::consume_optimized_module() {
-  return std::move(module_);
-}
 
 CpuCompiler::CpuCompiler() {
   // Initialize LLVM the first time the CpuCompiler is initialized.
@@ -471,6 +438,52 @@ void AddHloVerifier(HloPassPipeline* pipeline, HloVerifierOpts&& opts = {},
     pipeline->AddInvariantChecker<HloVerifier>(std::move(verifier_metadata),
                                                "hlo verifier");
   }
+}
+
+std::unique_ptr<HloPassFix<HloPassPipeline>> CreateSimplificationPipeline(
+    absl::string_view name, HloModule* module) {
+  // Run the following passes to a fixed point.
+  auto pipeline =
+      std::make_unique<HloPassFix<HloPassPipeline>>(std::string(name));
+  AddHloVerifier(pipeline.get(), HloVerifierOpts{},
+                 /*debug_only=*/true);
+
+  AlgebraicSimplifierOptions options;
+  options.set_enable_dot_strength_reduction(false);
+  // TODO(b/209827141): XLA:CPU doesn't propagate NaN through min/max, but
+  // other platforms do, so it should be changed.
+  options.set_minmax_propagate_nan(false);
+  options.set_supports_non_canonical_dots(false);
+  options.set_executing_on_cpu(true);
+  pipeline->AddPass<AlgebraicSimplifier>(options);
+  pipeline->AddPass<SortSimplifier>();
+  pipeline->AddPass<HloDCE>();
+  pipeline->AddPass<GatherExpander>(GatherExpander::kEliminateSimpleGathers);
+
+  // Needs to happen after algebraic simplifier.
+  pipeline->AddPass<TreeReductionRewriter>();
+
+  // BatchNormExpander can create zero-sized ops, so zero-sized HLO
+  // elimination has to come after that pass.
+  pipeline->AddPass<ZeroSizedHloElimination>();
+
+  pipeline->AddPass<WhileLoopInvariantCodeMotion>();
+  pipeline->AddPass<TupleSimplifier>();
+  pipeline->AddPass<WhileLoopConstantSinking>();
+  pipeline->AddPass<WhileLoopSimplifier>();
+
+  // TODO(b/134075051): Re-enable after b/134075051 is fixed.
+  // pipeline->AddPass<SliceSinker>();
+
+  pipeline->AddPass<HloDCE>();
+  pipeline->AddPass<ReshapeMover>();
+  pipeline->AddPass<HloConstantFolding>(
+      options::FoldAllConstants(module->config())
+          ? HloConstantFolding::Level::kAgressive
+          : HloConstantFolding::Level::kDefault);
+  pipeline->AddPass<ConditionalSimplifier>();
+
+  return pipeline;
 }
 
 }  // namespace
@@ -679,50 +692,17 @@ absl::Status CpuCompiler::RunHloPassesThroughLayoutAssn(
         F16, F32, HloPredicateIsOp<HloOpcode::kDot, HloOpcode::kConvolution>);
   }
 
-  // Run the following passes to a fixed point.
-  [&pipeline = pipeline.AddPass<HloPassFix<HloPassPipeline>>("simplification"),
-   module] {
-    AddHloVerifier(&pipeline, HloVerifierOpts{},
-                   /*debug_only=*/true);
+  pipeline.AddPass(CreateSimplificationPipeline("simplification", module));
 
-    AlgebraicSimplifierOptions options;
-    options.set_enable_dot_strength_reduction(false);
-    // TODO(b/209827141): XLA:CPU doesn't propagate NaN through min/max, but
-    // other platforms do, so it should be changed.
-    options.set_minmax_propagate_nan(false);
-    options.set_supports_non_canonical_dots(false);
-    options.set_executing_on_cpu(true);
-    pipeline.AddPass<AlgebraicSimplifier>(options);
-    pipeline.AddPass<SortSimplifier>();
-    pipeline.AddPass<HloDCE>();
-    pipeline.AddPass<GatherExpander>(GatherExpander::kEliminateSimpleGathers);
-
-    // Needs to happen after algebraic simplifier.
-    pipeline.AddPass<TreeReductionRewriter>();
-
-    // BatchNormExpander can create zero-sized ops, so zero-sized HLO
-    // elimination has to come after that pass.
-    pipeline.AddPass<ZeroSizedHloElimination>();
-
-    pipeline.AddPass<WhileLoopInvariantCodeMotion>();
-    pipeline.AddPass<TupleSimplifier>();
-    pipeline.AddPass<WhileLoopConstantSinking>();
-    pipeline.AddPass<WhileLoopSimplifier>();
-
-    // TODO(b/134075051): Re-enable after b/134075051 is fixed.
-    // pipeline.AddPass<SliceSinker>();
-
-    pipeline.AddPass<HloDCE>();
-    pipeline.AddPass<ReshapeMover>();
-    pipeline.AddPass<HloConstantFolding>(
-        options::FoldAllConstants(module->config())
-            ? HloConstantFolding::Level::kAgressive
-            : HloConstantFolding::Level::kDefault);
-    pipeline.AddPass<ConditionalSimplifier>();
-  }();
-
+  // Scatter expander is sandwiched between two simplification pipelines to
+  // enable constant folding with the original scatter instructions (which is
+  // more efficient than with the expanded version) but then to also ensure that
+  // the resulting while loops are simplified.
   pipeline.AddPass<SelectAndScatterExpander>();
   pipeline.AddPass<ScatterExpander>(ScatterExpander::kEliminateAllScatters);
+
+  pipeline.AddPass(CreateSimplificationPipeline(
+      "post_scatter_expansion_simplification", module));
 
   pipeline.AddPass<BitcastDtypesExpander>();
 
@@ -879,6 +859,8 @@ absl::Status CpuCompiler::RunHloPassesAfterLayoutAssn(
   } else {
     pipeline.AddPass<CopyInsertion>();
   }
+
+  pipeline.AddPass<SmallWhileLoopHoistingPass>(256);
 
   pipeline.AddPass<HloDCE>();
   return pipeline.Run(module).status();
@@ -1114,87 +1096,6 @@ std::vector<ComputationToEmit> SubcomputationEmissionOrder(
 }
 
 }  // namespace
-
-static absl::StatusOr<CpuExecutable::ConstantAllocation>
-LiteralToConstantAllocation(BufferAllocation::Index index,
-                            const Literal& literal) {
-  // TODO(ezhulenev): This code is almost identical to code in XLA:GPU, we
-  // should standardize it. See `xla/service/gpu/ir_emission_utils.cc`.
-  PrimitiveType element_type = literal.shape().element_type();
-  if (!primitive_util::IsArrayType(element_type)) {
-    return absl::InternalError(
-        "Only array literals can be converted to constant allocations");
-  }
-
-  int64_t size_bytes = literal.size_bytes();
-  const void* untyped_data = literal.untyped_data();
-
-  // Pack sub-byte types into an XLA storage format.
-  if (primitive_util::IsSubByteNonPredType(element_type)) {
-    int bit_width = primitive_util::BitWidth(element_type);
-    int packed_size_bytes = CeilOfRatio<int64_t>(size_bytes, 8 / bit_width);
-
-    // Use Literal as a storage for packed data as it allocates underlying
-    // buffer with correct alignment. Keep it allocated on heap to avoid
-    // capturing stack address that will be invalidated by a move below.
-    auto packed = std::make_unique<Literal>(
-        ShapeUtil::MakeShape(U8, {packed_size_bytes}));
-
-    PackIntN(
-        bit_width,
-        absl::MakeSpan(reinterpret_cast<const char*>(untyped_data), size_bytes),
-        absl::MakeSpan(reinterpret_cast<char*>(packed->untyped_data()),
-                       packed->size_bytes()));
-
-    return CpuExecutable::ConstantAllocation{index, std::move(packed)};
-  }
-
-  // Create a constant allocation from the literal's untyped data.
-  return CpuExecutable::ConstantAllocation{
-      index, absl::Span<const uint8_t>(
-                 reinterpret_cast<const uint8_t*>(untyped_data), size_bytes)};
-}
-
-// Creates a vector of constant allocations from the given buffer assignment.
-static absl::StatusOr<std::vector<CpuExecutable::ConstantAllocation>>
-CreateConstantAllocations(const BufferAssignment& assignment) {
-  std::vector<CpuExecutable::ConstantAllocation> constants;
-
-  for (const BufferAllocation& allocation : assignment.Allocations()) {
-    if (!allocation.is_constant()) {
-      continue;
-    }
-
-    // Find the constant instruction defining the value for allocation.
-    HloInstruction* const_instr = nullptr;
-    for (const auto& [value, _] : allocation.assigned_buffers()) {
-      // Multiple aliasing instructions can share the allocation, we need to
-      // find the original constant instruction that defines the value.
-      if (value->instruction()->opcode() == HloOpcode::kConstant) {
-        if (const_instr != nullptr) {
-          return absl::InternalError(
-              absl::StrCat("Multiple constant instructions define buffer ",
-                           allocation.ToString()));
-        }
-        const_instr = value->instruction();
-      }
-    }
-    if (const_instr == nullptr) {
-      return absl::InternalError(
-          absl::StrCat("Could not find constant instruction defining buffer ",
-                       allocation.ToString()));
-    }
-
-    VLOG(3) << "Create constant allocation for index " << allocation.index()
-            << " from constant literal " << const_instr->name()
-            << "; shape=" << const_instr->literal().shape();
-    TF_ASSIGN_OR_RETURN(constants.emplace_back(),
-                        LiteralToConstantAllocation(allocation.index(),
-                                                    const_instr->literal()));
-  }
-
-  return constants;
-}
 
 // Removes unused globals and function declarations from the LLVM module.
 //
@@ -1634,9 +1535,8 @@ CpuCompiler::CompileCpuExecutable(std::unique_ptr<HloModule> module) {
                         std::move(jit_compiler).Compile(compiled_symbols));
 
     // Create constant allocations from the buffer assignment.
-    TF_ASSIGN_OR_RETURN(
-        std::vector<CpuExecutable::ConstantAllocation> constants,
-        CreateConstantAllocations(*assignment));
+    TF_ASSIGN_OR_RETURN(std::vector<ConstantAllocation> constants,
+                        CreateConstantAllocations(*assignment));
 
     TF_ASSIGN_OR_RETURN(
         auto cpu_executable,
@@ -1913,7 +1813,7 @@ CpuCompiler::CompileAheadOfTime(std::unique_ptr<HloModuleGroup> module_group,
       }
 
       TargetMachineFeatures target_machine_features(target_machine.get());
-      std::vector<BufferInfo> buffer_infos =
+      std::vector<cpu_function_runtime::BufferInfo> buffer_infos =
           CreateBufferInfosFromBufferAssignment(*module, *assignment);
       HloComputation* computation = module->entry_computation();
 
@@ -2229,9 +2129,8 @@ CpuExecutableAotCompilationResult::LoadExecutable(
                         std::move(object_loader).Load(compiled_symbols));
 
     // Create constant allocations from the buffer assignment.
-    TF_ASSIGN_OR_RETURN(
-        std::vector<CpuExecutable::ConstantAllocation> constants,
-        CreateConstantAllocations(*buffer_assignment));
+    TF_ASSIGN_OR_RETURN(std::vector<ConstantAllocation> constants,
+                        CreateConstantAllocations(*buffer_assignment));
 
     TF_ASSIGN_OR_RETURN(
         cpu_executable,

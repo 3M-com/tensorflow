@@ -23,6 +23,7 @@ limitations under the License.
 #include <vector>
 
 #include <gtest/gtest.h>
+#include "absl/algorithm/container.h"
 #include "absl/log/check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -51,12 +52,31 @@ limitations under the License.
 #include "xla/service/gpu/ir_emission_utils.h"
 #include "xla/service/gpu/model/tiled_hlo_computation.h"
 #include "xla/status_macros.h"
+#include "xla/stream_executor/cuda/cuda_compute_capability.h"
 #include "xla/stream_executor/device_description.h"
 #include "xla/tests/hlo_test_base.h"
-#include "tsl/platform/errors.h"
-#include "tsl/platform/statusor.h"
+#include "xla/tsl/platform/errors.h"
+#include "xla/tsl/platform/statusor.h"
+#include "tsl/platform/protobuf.h"
 
 namespace xla::gpu {
+
+std::vector<xla::PrimitiveType> AllXlaDataTypes() {
+  std::vector<xla::PrimitiveType> xla_data_types;
+  std::vector<xla::PrimitiveType> to_filter_out = {PRIMITIVE_TYPE_INVALID,
+                                                   TUPLE, OPAQUE_TYPE, TOKEN};
+  const tsl::protobuf::EnumDescriptor* xla_type_descriptor =
+      tsl::protobuf::GetEnumDescriptor<xla::PrimitiveType>();
+  for (int enum_ix = 0; enum_ix < xla_type_descriptor->value_count();
+       ++enum_ix) {
+    xla::PrimitiveType xla_type = static_cast<xla::PrimitiveType>(
+        xla_type_descriptor->value(enum_ix)->number());
+    if (!absl::c_linear_search(to_filter_out, xla_type)) {
+      xla_data_types.push_back(xla_type);
+    }
+  }
+  return xla_data_types;
+}
 
 bool SupportsBF16(const stream_executor::GpuComputeCapability& cc) {
   if (std::holds_alternative<stream_executor::CudaComputeCapability>(cc)) {
@@ -146,6 +166,8 @@ std::string PrimitiveTypeAndHloOpcodeToString(PrimitiveType data_type,
       absl::StrReplaceAll(HloOpcodeString(opcode), {{"-", "_"}}));
 }
 
+}  // namespace
+
 std::string ComputeCapabilityToString(
     const stream_executor::GpuComputeCapability& cc) {
   if (auto cuda_cc = std::get_if<se::CudaComputeCapability>(&cc)) {
@@ -155,8 +177,6 @@ std::string ComputeCapabilityToString(
     return "rocm";
   }
 }
-
-}  // namespace
 
 std::string TritonSupportTestTypeAndDeviceToString(
     const ::testing::TestParamInfo<
@@ -208,7 +228,8 @@ namespace {
 // computation whose root is a fusion. Otherwise, creates a new entry
 // computation whose root is a fusion instruction that calls the original entry
 // computation. The new fusion instruction uses the generic Triton backend kind.
-absl::Status ConvertEntryToTritonFusion(HloModule* module) {
+absl::Status ConvertEntryToTritonFusion(HloModule* module,
+                                        bool use_nested_gemm_fusions) {
   if (module->entry_computation()->root_instruction()->opcode() ==
       HloOpcode::kFusion) {
     return absl::OkStatus();
@@ -230,8 +251,13 @@ absl::Status ConvertEntryToTritonFusion(HloModule* module) {
       module->entry_computation()));
 
   gpu::GpuBackendConfig gpu_config;
-  gpu_config.mutable_fusion_backend_config()->set_kind(
-      std::string(kTritonFusionKind));
+  if (use_nested_gemm_fusions) {
+    gpu_config.mutable_fusion_backend_config()->set_kind(
+        std::string(kTritonNestedGemmFusionKind));
+  } else {
+    gpu_config.mutable_fusion_backend_config()->set_kind(
+        std::string(kTritonFusionKind));
+  }
   TF_RETURN_IF_ERROR(fusion->set_backend_config(gpu_config));
 
   auto new_entry =
@@ -254,13 +280,14 @@ DebugOptions TritonSupportTestBase::GetDebugOptionsForTest() const {
 absl::StatusOr<TritonSupportTestBase::TestedInstruction>
 TritonSupportTestBase::ParseTemplateAndGetInstruction(
     absl::string_view hlo_template, xla::PrimitiveType data_type,
-    xla::HloOpcode opcode) {
+    xla::HloOpcode opcode, bool use_nested_gemm_fusions) {
   const std::string hlo_text = absl::Substitute(
       hlo_template, primitive_util::LowercasePrimitiveTypeName(data_type),
       HloOpcodeString(opcode));
   TF_ASSIGN_OR_RETURN(std::unique_ptr<HloModule> module,
                       ParseAndReturnVerifiedModule(hlo_text));
-  TF_RETURN_IF_ERROR(ConvertEntryToTritonFusion(module.get()));
+  TF_RETURN_IF_ERROR(
+      ConvertEntryToTritonFusion(module.get(), use_nested_gemm_fusions));
   const HloComputation* computation =
       module->GetComputationWithName("triton_computation");
   if (computation == module->entry_computation()) {

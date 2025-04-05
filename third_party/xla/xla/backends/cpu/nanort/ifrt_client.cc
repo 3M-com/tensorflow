@@ -57,6 +57,7 @@ limitations under the License.
 #include "xla/pjrt/pjrt_layout.h"
 #include "xla/pjrt/utils.h"
 #include "xla/python/ifrt/array.h"
+#include "xla/python/ifrt/array_spec.h"
 #include "xla/python/ifrt/attribute_map.h"
 #include "xla/python/ifrt/basic_device_list.h"
 #include "xla/python/ifrt/client.h"
@@ -77,6 +78,7 @@ limitations under the License.
 #include "xla/python/ifrt/sharding.h"
 #include "xla/python/ifrt/topology.h"
 #include "xla/python/ifrt/tuple.h"
+#include "xla/python/ifrt/user_context.h"
 #include "xla/python/ifrt/value.h"
 #include "xla/python/pjrt_ifrt/pjrt_dtype.h"
 #include "xla/python/pjrt_ifrt/xla_sharding.h"
@@ -1180,12 +1182,12 @@ ABSL_ATTRIBUTE_UNUSED char NanoMemory::ID = 'M';  // NOLINT
 // Device implementation. There is only one device so this doesn't do much.
 class NanoDevice final : public llvm::RTTIExtends<NanoDevice, ifrt::Device> {
  public:
-  NanoDevice(NanoIfrtClient* client, ifrt::Memory* memory)
-      : client_(client), memory_(memory) {}
+  NanoDevice(NanoIfrtClient* client, ifrt::DeviceId id, ifrt::Memory* memory)
+      : client_(client), id_(id), memory_(memory) {}
 
   ifrt::Client* client() const override { return client_; }
 
-  ifrt::DeviceId Id() const override { return ifrt::DeviceId(0); }
+  ifrt::DeviceId Id() const override { return id_; }
 
   const ifrt::AttributeMap& Attributes() const override {
     static auto attributes = new ifrt::AttributeMap({});
@@ -1214,6 +1216,7 @@ class NanoDevice final : public llvm::RTTIExtends<NanoDevice, ifrt::Device> {
 
  private:
   NanoIfrtClient* client_;
+  ifrt::DeviceId id_;
   ifrt::Memory* memory_;
 };
 
@@ -1233,7 +1236,8 @@ std::shared_ptr<NanoIfrtClient> NanoIfrtClient::CreateWithDevices(
 }
 
 std::shared_ptr<ifrt::Sharding> NanoIfrtClient::default_sharding() const {
-  return ifrt::SingleDeviceSharding::Create(device_.get(), ifrt::MemoryKind{});
+  return ifrt::SingleDeviceSharding::Create(devices_.front(),
+                                            ifrt::MemoryKind{});
 }
 
 absl::StatusOr<tsl::RCReference<ifrt::Array>>
@@ -1242,7 +1246,9 @@ NanoIfrtClient::MakeArrayFromHostBuffer(
     std::optional<absl::Span<const int64_t>> byte_strides,
     absl::Nonnull<std::shared_ptr<const ifrt::Sharding>> sharding,
     HostBufferSemantics semantics,
-    std::function<void()> on_done_with_host_buffer) {
+    std::function<void()> on_done_with_host_buffer,
+    tsl::RCReference<xla::ifrt::UserContext> user_context) {
+  // Currently the `user_context` parameter is ignored.
   bool make_copy = false;
   switch (semantics) {
     case HostBufferSemantics::kImmutableUntilTransferCompletes:
@@ -1263,8 +1269,19 @@ NanoIfrtClient::MakeArrayFromHostBuffer(
 absl::StatusOr<std::vector<tsl::RCReference<ifrt::Array>>>
 NanoIfrtClient::MakeArraysFromHostBufferShards(
     absl::Span<MakeArraysFromHostBufferShardsSpec> specs,
-    HostBufferSemantics semantics) {
-  return ifrt::ClientMakeArraysFromHostBufferShards(this, specs, semantics);
+    HostBufferSemantics semantics,
+    tsl::RCReference<ifrt::UserContext> user_context) {
+  return ifrt::ClientMakeArraysFromHostBufferShards(this, specs, semantics,
+                                                    std::move(user_context));
+}
+
+absl::StatusOr<std::vector<tsl::RCReference<xla::ifrt::Array>>>
+NanoIfrtClient::MakeErrorArrays(
+    const absl::Status& error,
+    absl::Span<const xla::ifrt::ArraySpec> array_specs,
+    tsl::RCReference<xla::ifrt::UserContext> user_context) {
+  return absl::UnimplementedError(
+      "NanoIfrtClient does not support MakeErrorArrays.");
 }
 
 absl::StatusOr<tsl::RCReference<ifrt::Array>>
@@ -1394,7 +1411,9 @@ absl::StatusOr<ifrt::Device*> NanoIfrtClient::LookupDevice(
 
 absl::StatusOr<ifrt::Device*> NanoIfrtClient::LookupAddressableDevice(
     int local_hardware_id) const {
-  return device_.get();
+  TF_RET_CHECK(local_hardware_id >= 0);
+  TF_RET_CHECK(local_hardware_id < devices_.size());
+  return devices_[local_hardware_id];
 }
 
 ifrt::DeviceListRef NanoIfrtClient::MakeDeviceList(
@@ -1420,11 +1439,17 @@ NanoIfrtClient::GetDefaultLayout(ifrt::DType dtype,
 
 NanoIfrtClient::NanoIfrtClient(int32_t num_devices)
     : compiler_(std::make_unique<NanoCompiler>(this)),
-      memory_(std::make_unique<NanoMemory>(this)),
-      device_(std::make_unique<NanoDevice>(this, memory_.get())),
-      default_sharding_(
-          ifrt::SingleDeviceSharding::Create(device_.get(), memory_->Kind())),
-      devices_(num_devices, device_.get()) {}
+      memory_(std::make_unique<NanoMemory>(this)) {
+  owned_devices_.reserve(num_devices);
+  devices_.reserve(num_devices);
+  for (int i = 0; i < num_devices; ++i) {
+    owned_devices_.push_back(
+        std::make_unique<NanoDevice>(this, ifrt::DeviceId(i), memory_.get()));
+    devices_.push_back(owned_devices_.back().get());
+  }
+  default_sharding_ =
+      ifrt::SingleDeviceSharding::Create(devices_.front(), memory_->Kind());
+}
 
 char NanoIfrtClient::ID = 'N';  // NOLINT
 

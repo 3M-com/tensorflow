@@ -111,6 +111,9 @@ TEST(FfiTest, DataTypeEnumValue) {
 
   EXPECT_EQ(encoded(PrimitiveType::PRED), encoded(DataType::PRED));
 
+  EXPECT_EQ(encoded(PrimitiveType::S1), encoded(DataType::S1));
+  EXPECT_EQ(encoded(PrimitiveType::S2), encoded(DataType::S2));
+  EXPECT_EQ(encoded(PrimitiveType::S4), encoded(DataType::S4));
   EXPECT_EQ(encoded(PrimitiveType::S8), encoded(DataType::S8));
   EXPECT_EQ(encoded(PrimitiveType::S16), encoded(DataType::S16));
   EXPECT_EQ(encoded(PrimitiveType::S32), encoded(DataType::S32));
@@ -151,6 +154,12 @@ TEST(FfiTest, DataTypeByteWidth) {
   EXPECT_EQ(primitive_util::ByteWidth(PrimitiveType::PRED),
             ByteWidth(DataType::PRED));
 
+  EXPECT_EQ(primitive_util::ByteWidth(PrimitiveType::S1),
+            ByteWidth(DataType::S1));
+  EXPECT_EQ(primitive_util::ByteWidth(PrimitiveType::S2),
+            ByteWidth(DataType::S2));
+  EXPECT_EQ(primitive_util::ByteWidth(PrimitiveType::S4),
+            ByteWidth(DataType::S4));
   EXPECT_EQ(primitive_util::ByteWidth(PrimitiveType::S8),
             ByteWidth(DataType::S8));
   EXPECT_EQ(primitive_util::ByteWidth(PrimitiveType::S16),
@@ -160,6 +169,12 @@ TEST(FfiTest, DataTypeByteWidth) {
   EXPECT_EQ(primitive_util::ByteWidth(PrimitiveType::S64),
             ByteWidth(DataType::S64));
 
+  EXPECT_EQ(primitive_util::ByteWidth(PrimitiveType::U1),
+            ByteWidth(DataType::U1));
+  EXPECT_EQ(primitive_util::ByteWidth(PrimitiveType::U2),
+            ByteWidth(DataType::U2));
+  EXPECT_EQ(primitive_util::ByteWidth(PrimitiveType::U4),
+            ByteWidth(DataType::U4));
   EXPECT_EQ(primitive_util::ByteWidth(PrimitiveType::U8),
             ByteWidth(DataType::U8));
   EXPECT_EQ(primitive_util::ByteWidth(PrimitiveType::U16),
@@ -429,6 +444,24 @@ TEST(FfiTest, RunId) {
 
   CallOptions options;
   options.run_id = xla::RunId{42};
+
+  auto status = Call(*handler, call_frame, options);
+
+  TF_ASSERT_OK(status);
+}
+
+TEST(FfiTest, DeviceOrdinal) {
+  CallFrameBuilder builder(/*num_args=*/0, /*num_rets=*/0);
+  auto call_frame = builder.Build();
+
+  auto handler =
+      Ffi::Bind().Ctx<DeviceOrdinal>().To([&](int32_t device_ordinal) {
+        EXPECT_EQ(device_ordinal, 42);
+        return Error::Success();
+      });
+
+  CallOptions options;
+  options.device_ordinal = 42;
 
   auto status = Call(*handler, call_frame, options);
 
@@ -1281,6 +1314,13 @@ TEST(FfiTest, ScratchAllocatorUnimplemented) {
       CallFrameBuilder(/*num_args=*/0, /*num_rets=*/0).Build();
   auto status = Call(*handler, call_frame);
   TF_ASSERT_OK(status);
+}
+
+TEST(FfiTest, BindFfiInternals) {
+  (void)Ffi::Bind().Ctx<FfiApi>().Ctx<FfiExecutionContext>().To(
+      +[](const XLA_FFI_Api* api, XLA_FFI_ExecutionContext* ctx) {
+        return Error::Success();
+      });
 }
 
 TEST(FfiTest, ThreadPool) {

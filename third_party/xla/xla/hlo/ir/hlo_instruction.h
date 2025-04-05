@@ -300,9 +300,11 @@ class HloInstruction {
   void DetachFromOperandsAndUsers();
 
   // Adds a derived instruction to the parent computation of this instruction.
-  // Also update setup the new instruction as a derived instruction.
+  // Updates setup the new instruction as a derived instruction, and sets the
+  // name of the new instruction (if `new_name` is not empty).
   HloInstruction* AddInstruction(
-      std::unique_ptr<HloInstruction> derived_instruction);
+      std::unique_ptr<HloInstruction> derived_instruction,
+      absl::string_view new_name = "");
 
   // Creates an instruction from the given proto. Arguments:
   //
@@ -996,7 +998,7 @@ class HloInstruction {
   // Creates a dynamic reshape instruction. Similar to reshape but dynamic
   // dimensions sizes are provided as additional variadic arguments.
   //
-  // Precondition: dim_sizes.size() == shape.rank()
+  // Precondition: dim_sizes.size() == shape.dimensions_size()
   static std::unique_ptr<HloInstruction> CreateDynamicReshape(
       const Shape& shape, HloInstruction* data_operand,
       absl::Span<HloInstruction* const> dim_sizes);

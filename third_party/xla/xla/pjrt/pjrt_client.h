@@ -621,12 +621,9 @@ class PjRtClient {
   // Pending completion of b/237720161, `options` is a mandatory argument in
   // most implementations of this interface. They _are_ optional for
   // implementations related to the PJRT C API.
-  // ABSL_DEPRECATED("Use LoadSerializedExecutable() below instead")
-  virtual absl::StatusOr<std::unique_ptr<PjRtLoadedExecutable>>
-  DeserializeExecutable(absl::string_view serialized,
-                        std::optional<CompileOptions> options) {
-    return LoadSerializedExecutable(serialized, std::move(options),
-                                    LoadOptions());
+  virtual absl::StatusOr<std::unique_ptr<PjRtExecutable>> DeserializeExecutable(
+      absl::string_view serialized, std::optional<CompileOptions> options) {
+    return Unimplemented("Deserializing serialized executable not supported.");
   }
 
   // LoadSerializedExecutable takes the serialized output of PjRtExecutable. The
@@ -932,12 +929,6 @@ class PjRtClient {
                               PjRtDevice* device,
                               PjRtCrossHostRecvNotifier notifier) {
     return Unimplemented("MakeCrossHostReceiveBuffers is not implemented.");
-  }
-
-  // TODO(zhangqiaorjc): Experimental API to be removed.
-  // Defragment device memory.
-  virtual absl::Status Defragment() {
-    return Unimplemented("Defragment is not implemented.");
   }
 
   // Return the PjRtHostMemoryForDeviceManager for this client. It can be

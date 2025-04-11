@@ -26,11 +26,9 @@ limitations under the License.
 #include <vector>
 
 #include "absl/algorithm/container.h"
-#include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
-#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
@@ -53,11 +51,11 @@ limitations under the License.
 #include "llvm/IR/Value.h"
 #include "llvm/Linker/Linker.h"
 #include "llvm/Support/CodeGen.h"
-#include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
 #include "xla/backends/cpu/codegen/emitters/cpu_fusion_emitter.h"
 #include "xla/backends/cpu/codegen/emitters/cpu_fusion_emitter_config.h"
 #include "xla/backends/cpu/codegen/emitters/cpu_scatter_emitter.h"
+#include "xla/backends/cpu/codegen/fusion_compiler.h"
 #include "xla/backends/cpu/codegen/kernel_api_ir_builder.h"
 #include "xla/backends/cpu/codegen/symbol_name_util.h"
 #include "xla/hlo/ir/hlo_computation.h"
@@ -66,14 +64,11 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/hlo/ir/hlo_schedule.h"
-#include "xla/layout_util.h"
-#include "xla/service/buffer_assignment.h"
 #include "xla/service/cpu/backend_config.pb.h"
 #include "xla/service/cpu/dot_op_emitter.h"
 #include "xla/service/cpu/elemental_ir_emitter.h"
 #include "xla/service/cpu/ir_emitter.h"
 #include "xla/service/cpu/parallel_loop_emitter.h"
-#include "xla/service/elemental_ir_emitter.h"
 #include "xla/service/hlo_module_config.h"
 #include "xla/service/llvm_ir/dynamic_update_slice_util.h"
 #include "xla/service/llvm_ir/fused_ir_emitter.h"
@@ -82,13 +77,12 @@ limitations under the License.
 #include "xla/service/llvm_ir/loop_emitter.h"
 #include "xla/shape.h"
 #include "xla/shape_partition.h"
-#include "xla/shape_util.h"
 #include "xla/stream_executor/launch_dim.h"
 #include "xla/tsl/platform/errors.h"
+#include "xla/tsl/platform/statusor.h"
 #include "xla/util.h"
 #include "xla/xla.pb.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/platform/statusor.h"
 
 namespace xla::cpu {
 
@@ -204,14 +198,14 @@ absl::StatusOr<IrEmitter2::KernelInfo> IrEmitter2::EmitPadHostKernel(
 
 absl::StatusOr<IrEmitter2::KernelInfo> IrEmitter2::EmitFusionWithFusionEmitters(
     const HloFusionInstruction* fusion) {
-  mlir::DialectRegistry registry;
-  mlir::MLIRContext mlir_context(registry);
+  std::unique_ptr<mlir::MLIRContext> mlir_context =
+      FusionCompiler::CreateContext();
   FusionEmitterKind fusion_emitter_kind = AnalyzeHloFusion(fusion);
   std::unique_ptr<CpuFusionEmitterBase> emitter;
   switch (fusion_emitter_kind) {
     case FusionEmitterKind::kScatter:
       emitter = std::make_unique<CpuScatterFusion>(
-          &mlir_context, &module_->getContext(),
+          mlir_context.get(), &module_->getContext(),
           nested_ir_emitter_->assignment(), fusion);
       break;
     default:
@@ -219,16 +213,30 @@ absl::StatusOr<IrEmitter2::KernelInfo> IrEmitter2::EmitFusionWithFusionEmitters(
                       fusion_emitter_kind, fusion->ToString());
   }
 
-  TF_ASSIGN_OR_RETURN(auto fusion_result, emitter->Emit());
-  if (llvm::Linker::linkModules(*module_,
-                                std::move(fusion_result.llvm_module))) {
+  TF_ASSIGN_OR_RETURN(auto mlir_module, emitter->Emit());
+
+  FusionCompiler compiler(FusionCompiler::Options{});
+  TF_ASSIGN_OR_RETURN(
+      std::unique_ptr<llvm::Module> llvm_module,
+      compiler.Compile(module_->getContext(), mlir_module.get()));
+
+  // TODO(willfroom): This should be done as part of the fusion emitter and
+  // lowered by the above compiler.
+  TF_ASSIGN_OR_RETURN(
+      absl::flat_hash_set<int64_t> invariant_arguments,
+      SetKernelFunctionAttributes(*llvm_module,
+                                  nested_ir_emitter_->assignment(), fusion));
+
+  // Match data layouts to avoid warning messages.
+  llvm_module->setDataLayout(module_->getDataLayout());
+  if (llvm::Linker::linkModules(*module_, std::move(llvm_module))) {
     return Internal("Cannot link additional LLVM module for fusion %s",
                     fusion->name());
   }
-  return kernels_.emplace_back(KernelInfo(
-      std::string(fusion->name()), se::BlockDim(),
-      se::ThreadDim(emitter->num_threads()), fusion_result.invariant_arguments,
-      emitter->BackendExtraOptions()));
+  return kernels_.emplace_back(
+      KernelInfo(std::string(fusion->name()), se::BlockDim(),
+                 se::ThreadDim(emitter->num_threads()), invariant_arguments,
+                 emitter->BackendExtraOptions()));
 }
 
 absl::StatusOr<IrEmitter2::KernelInfo> IrEmitter2::EmitFusionHostKernel(

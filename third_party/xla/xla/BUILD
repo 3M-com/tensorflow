@@ -3,7 +3,7 @@ load("//third_party/compute_library:build_defs.bzl", "if_enable_acl")
 
 # copybara:uncomment load("@rules_python//python:proto.bzl", "py_proto_library")
 load("//xla:package_groups.bzl", "xla_package_groups")
-load("//xla:xla.bzl", "xla_bzl_library", "xla_cc_test", "xla_py_proto_library")
+load("//xla:xla.default.bzl", "xla_bzl_library", "xla_cc_test", "xla_py_proto_library")
 load("//xla/tsl:tsl.bzl", "if_google", "internal_visibility")
 load("//xla/tsl:tsl.default.bzl", "filegroup", "get_compatible_with_portable")
 load(
@@ -208,15 +208,6 @@ cc_library(
 )
 
 cc_library(
-    name = "test",
-    testonly = 1,
-    hdrs = ["test.h"],
-    deprecation = "This library is deprecated and will be removed in February 2025. Use //third_party/tensorflow/compiler/xla/hlo/testlib:test instead.",
-    visibility = internal_visibility([":friends"]),
-    deps = ["//xla/hlo/testlib:test"],
-)
-
-cc_library(
     name = "types",
     hdrs = ["types.h"],
     compatible_with = get_compatible_with_portable(),
@@ -326,6 +317,7 @@ cc_library(
         "//xla/tsl/platform:env",
         "//xla/tsl/platform:errors",
         "//xla/tsl/platform:logging",
+        "//xla/tsl/util:safe_reinterpret_cast",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/base",
         "@com_google_absl//absl/base:core_headers",
@@ -628,6 +620,7 @@ cc_library(
         "//xla/tsl/platform:status",
         "//xla/tsl/platform:statusor",
         "//xla/tsl/util:byte_swap_array",
+        "//xla/tsl/util:safe_reinterpret_cast",
         "@com_google_absl//absl/base",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/container:inlined_vector",
@@ -666,6 +659,7 @@ xla_cc_test(
         "//xla/tsl/platform:statusor",
         "//xla/tsl/platform:test_benchmark",
         "//xla/tsl/platform:test_main",
+        "//xla/tsl/util:safe_reinterpret_cast",
         "@com_google_absl//absl/base",
         "@com_google_absl//absl/hash",
         "@com_google_absl//absl/random",
@@ -937,15 +931,6 @@ cc_library(
         "@com_google_absl//absl/types:span",
         "@local_tsl//tsl/platform:protobuf",
     ],
-)
-
-cc_library(
-    name = "test_helpers",
-    testonly = 1,
-    hdrs = ["test_helpers.h"],
-    deprecation = "This library is deprecated and will be removed in February 2025. Use //third_party/tensorflow/compiler/xla/hlo/testlib:test_helpers instead.",
-    visibility = internal_visibility([":friends"]),
-    deps = ["//xla/hlo/testlib:test_helpers"],
 )
 
 cc_library(
@@ -1232,6 +1217,7 @@ cc_library(
     visibility = internal_visibility([":friends"]),
     deps = [
         "//xla/backends/cpu:alignment",
+        "//xla/tsl/util:safe_reinterpret_cast",
         "@com_google_absl//absl/base:dynamic_annotations",
     ],
 )

@@ -25,8 +25,9 @@ include "mlir/Interfaces/ViewLikeInterface.td" // OffsetSizeAndStrideOpInterface
 include "xla/backends/gpu/codegen/triton/ir/triton_xla_dialect.td"
 include "xla/backends/gpu/codegen/triton/ir/triton_xla_types.td"
 include "triton/Dialect/Triton/IR/TritonInterfaces.td"
-include "triton/Dialect/TritonGPU/IR/TritonGPUTypeInterfaces.td"
+include "triton/Dialect/Triton/IR/TritonOpInterfaces.td"
 include "triton/Dialect/Triton/IR/TritonTypes.td"
+include "triton/Dialect/TritonGPU/IR/TritonGPUTypeInterfaces.td"
 
 // -----------------------------------------------------------------------------
 // Triton XLA Ops
@@ -47,36 +48,24 @@ def TTXLA_TileOp : TTXLA_Op<"tile", [Pure, SameVariadicOperandSize,
     Example:
       ```
       %tensor: tensor<120x320xbf16>
-      %of = arith.constant 0 : i32
-      %sz1 = arith.constant 16 : i64
-      %sz2 = arith.constant 64 : i64
-      %st1 = arith.constant 120 : i64
-      %st2 = arith.constant 1 : i64
+      %of = arith.constant 0 : index
+      %st1 = arith.constant 120 : index
+      %st2 = arith.constant 1 : index
       ...
-      %tiled_tensor = triton_xla.tile %tensor [%of, %of][%sz1, %sz2][%st1, %st2]
-      : !triton_xla.tiled_tensor<16x64|120x320xbf16>
+      %tiled_tensor = triton_xla.tile %tensor [%of, %of][%st1, %st2]
+        {layout = array<i64:1, 0>}: !triton_xla.tiled_tensor<16x64|120x320xbf16>
       ```
   }];
 
   let arguments = (ins
     AnyRankedTensor:$tensor,
-    Variadic<I32>:$offsets,
-    Variadic<I64>:$sizes,
-    Variadic<I64>:$strides
+    Variadic<Index>:$offsets,
+    Variadic<Index>:$strides,
+    DenseI64ArrayAttr:$layout
   );
   let results = (outs TTXLA_TiledTensorType:$tiled_tensor);
   let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;
-
-  let builders = [
-    OpBuilder<(ins
-      "Value":$tensor,
-      "ValueRange":$offsets,
-      "ValueRange":$sizes,
-      "ValueRange":$strides,
-      "ArrayRef<int32_t>":$tensor_shape
-    )>
-  ];
 }
 
 def TTXLA_ExtractOp : TTXLA_Op<"extract", [Pure,
@@ -97,7 +86,7 @@ def TTXLA_ExtractOp : TTXLA_Op<"extract", [Pure,
 
   let arguments = (ins
     TTXLA_TiledTensorType:$src,
-    Variadic<I32>:$offsets
+    Variadic<Index>:$offsets
   );
   let results = (outs AnyRankedTensor:$result);
   let hasCustomAssemblyFormat = 1;
@@ -124,7 +113,7 @@ def TTXLA_InsertOp : TTXLA_Op<"insert", [Pure,
   let arguments = (ins
     AnyRankedTensor:$src,
     TTXLA_TiledTensorType:$dst,
-    Variadic<I32>:$offsets
+    Variadic<Index>:$offsets
   );
   let results = (outs AnyRankedTensor:$result);
   let hasCustomAssemblyFormat = 1;

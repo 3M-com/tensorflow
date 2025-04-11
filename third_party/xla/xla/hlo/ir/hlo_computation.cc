@@ -50,6 +50,8 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/hlo/ir/hlo_opcode.h"
+#include "xla/hlo/ir/hlo_original_value.h"
+#include "xla/hlo/ir/hlo_print_options.h"
 #include "xla/hlo/ir/ptrvec.h"
 #include "xla/literal.h"
 #include "xla/map_util.h"
@@ -453,6 +455,7 @@ absl::Status HloComputation::RemoveParameter(int64_t param_no) {
     HloInstruction* new_instr =
         AddInstructionInternal(HloInstruction::CreateParameter(
             param_no, param_instruction->shape(), StrCat("param_", param_no)));
+    param_instruction->SetupDerivedInstruction(new_instr);
     TF_RETURN_IF_ERROR(param_instruction->ReplaceAllUsesWith(new_instr));
     param_instructions_[param_no] = new_instr;
     TF_RETURN_IF_ERROR(ForceRemoveInstruction(param_instruction));
@@ -1215,7 +1218,7 @@ HloComputation::CreateFromProto(
   if (!proto.execution_thread().empty()) {
     computation->SetExecutionThread(proto.execution_thread());
   }
-  return std::move(computation);
+  return computation;
 }
 
 void HloComputation::AppendInstructionsIntoCalledComputation(
@@ -1586,20 +1589,7 @@ absl::StatusOr<bool> HloComputation::ReplaceInstructionWithDifferentShape(
     new_instruction->set_frontend_attributes(
         old_instruction->frontend_attributes());
   }
-  if (auto original_value = old_instruction->original_value()) {
-    // Fusions are handled separately. The original value of fused instructions
-    // is copied when they are added into the fused computation.
-    if (new_instruction->opcode() != HloOpcode::kFusion) {
-      if (ShapeUtil::Compatible(old_instruction->shape(),
-                                new_instruction->shape())) {
-        new_instruction->set_original_value(original_value);
-      } else {
-        LOG(WARNING)
-            << "Expect the new instruction to have the same shape with the old "
-               "instruction when copying over original_value\n";
-      }
-    }
-  }
+  CopyOriginalValue(old_instruction, new_instruction);
 
   // Like the metadata above, if the user didn't specify any sharding
   // information on the new instruction we should copy the old sharding

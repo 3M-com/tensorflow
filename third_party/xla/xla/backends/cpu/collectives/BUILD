@@ -1,4 +1,4 @@
-load("//xla:xla.bzl", "xla_cc_test")
+load("//xla:xla.default.bzl", "xla_cc_test")
 load("//xla/tsl:tsl.bzl", "internal_visibility")
 load("//xla/tsl/platform:rules_cc.bzl", "cc_library")
 
@@ -68,6 +68,24 @@ cc_library(
     ],
 )
 
+xla_cc_test(
+    name = "cpu_cliques_test",
+    srcs = ["cpu_cliques_test.cc"],
+    deps = [
+        ":cpu_clique_key",
+        ":cpu_cliques",
+        ":in_process_collectives",
+        "//xla:util",
+        "//xla/core/collectives:rank_id",
+        "//xla/service:global_device_id",
+        "//xla/tsl/platform:statusor",
+        "//xla/tsl/platform:test",
+        "//xla/tsl/platform:test_main",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
 cc_library(
     name = "cpu_collectives",
     srcs = ["cpu_collectives.cc"],
@@ -92,7 +110,6 @@ cc_library(
     ],
 )
 
-# TODO(b/380457503): Restrict visibility to private.
 cc_library(
     name = "in_process_collectives",
     srcs = ["in_process_collectives.cc"],
@@ -125,7 +142,6 @@ cc_library(
     ],
 )
 
-# TODO(b/380457503): Restrict visibility to private.
 cc_library(
     name = "in_process_communicator",
     srcs = ["in_process_communicator.cc"],
@@ -159,7 +175,6 @@ cc_library(
     ],
 )
 
-# TODO(b/380457503): Restrict visibility to private.
 cc_library(
     name = "gloo_kv_store",
     srcs = ["gloo_kv_store.cc"],
@@ -169,9 +184,10 @@ cc_library(
         "-fno-strict-aliasing",
     ],
     features = ["-use_header_modules"],
-    visibility = [
+    visibility = internal_visibility([
         "//xla/pjrt/cpu:legacy_cpu_internal_users",
-    ],
+        "//third_party/py/jax:__subpackages__",
+    ]),
     deps = [
         "//xla/pjrt:status_casters",
         "//xla/pjrt/distributed:key_value_store_interface",
@@ -181,7 +197,6 @@ cc_library(
     ],
 )
 
-# TODO(b/380457503): Restrict visibility to private.
 cc_library(
     name = "gloo_collectives",
     srcs = ["gloo_collectives.cc"],
@@ -263,7 +278,6 @@ xla_cc_test(
     }),
 )
 
-# TODO(b/380457503): Restrict visibility to private.
 cc_library(
     name = "gloo_communicator",
     srcs = ["gloo_communicator.cc"],
@@ -343,7 +357,6 @@ cc_library(
     ],
 )
 
-# TODO(b/380457503): Restrict visibility to private.
 cc_library(
     name = "mpi_communicator",
     srcs = ["mpi_communicator.cc"],

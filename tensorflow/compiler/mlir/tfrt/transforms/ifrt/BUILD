@@ -23,6 +23,7 @@ package_group(
         "//learning/pathways/serving/runtime/...",
         "//learning/pathways/serving/tests/...",
         "//learning/brain/tfrt/ifrt/...",
+        "//learning/brain/tfrt/tfrt_session/...",
         "//learning/brain/tfrt/mlir/mlrt/application/pathways/compiler/...",
         # Allow visibility from the mlir language server.
         "//learning/brain/mlir/mlir_lsp_server/...",
@@ -33,15 +34,10 @@ package_group(
 
 gentbl_cc_library(
     name = "pass_inc_gen",
-    tbl_outs = [
-        (
-            [
-                "-gen-pass-decls",
-                "-name=TfrtIfrtServing",
-            ],
-            "passes.h.inc",
-        ),
-    ],
+    tbl_outs = {"passes.h.inc": [
+        "-gen-pass-decls",
+        "-name=TfrtIfrtServing",
+    ]},
     tblgen = "@llvm-project//mlir:mlir-tblgen",
     td_file = "passes.td",
     deps = [

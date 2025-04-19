@@ -340,7 +340,7 @@ static HandlerKey MakeHandlerKey(std::string_view name,
 }
 
 static HandlerRegistry& GetHandlerRegistry() {
-  static auto* registry = new HandlerRegistry();
+  static auto* const registry = new HandlerRegistry();
   return *registry;
 }
 
@@ -627,6 +627,15 @@ static XLA_FFI_Error* XLA_FFI_RunId_Get(XLA_FFI_RunId_Get_Args* args) {
 
   args->run_id = args->ctx->run_id.ToInt();
 
+  return nullptr;
+}
+
+static XLA_FFI_Error* XLA_FFI_DeviceOrdinal_Get(
+    XLA_FFI_DeviceOrdinal_Get_Args* args) {
+  XLA_FFI_RETURN_IF_ERROR(ActualStructSizeIsGreaterOrEqual(
+      "XLA_FFI_DeviceOrdinal_Get", XLA_FFI_DeviceOrdinal_Get_Args_STRUCT_SIZE,
+      args->struct_size));
+  args->device_ordinal = args->ctx->device_ordinal;
   return nullptr;
 }
 
@@ -958,6 +967,7 @@ static XLA_FFI_Api api = {
     XLA_FFI_Future_SetAvailable,
     XLA_FFI_Future_SetError,
     XLA_FFI_RunId_Get,
+    XLA_FFI_DeviceOrdinal_Get,
 };
 
 const XLA_FFI_Api* GetXlaFfiApi() { return &api; }

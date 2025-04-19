@@ -52,29 +52,6 @@ cc_library(
 )
 
 cc_library(
-    name = "rename_entrypoint_to_main",
-    srcs = [
-        "transforms/rename_entrypoint_to_main.cc",
-    ],
-    hdrs = [
-        "transforms/rename_entrypoint_to_main.h",
-    ],
-    copts = [
-        "-Ithird_party",
-    ],
-    deps = [
-        ":stablehlo_util",
-        "//tensorflow/compiler/mlir/tensorflow",
-        "@llvm-project//llvm:Support",
-        "@llvm-project//mlir:FuncDialect",
-        "@llvm-project//mlir:IR",
-        "@llvm-project//mlir:Pass",
-        "@llvm-project//mlir:Support",
-    ],
-    alwayslink = 1,
-)
-
-cc_library(
     name = "hlo_matchers",
     srcs = [
         "transforms/hlo_matchers.cc",
@@ -146,12 +123,7 @@ tf_cc_test(
 gentbl_cc_library(
     name = "legalize_tf_patterns_inc_gen",
     compatible_with = get_compatible_with_portable(),
-    tbl_outs = [
-        (
-            ["-gen-rewriters"],
-            "transforms/generated_legalize_tf.inc",
-        ),
-    ],
+    tbl_outs = {"transforms/generated_legalize_tf.inc": ["-gen-rewriters"]},
     tblgen = "@llvm-project//mlir:mlir-tblgen",
     td_file = "transforms/legalize_tf_patterns.td",
     deps = [
@@ -194,13 +166,12 @@ cc_library(
         "@local_tsl//tsl/platform:bfloat16",
         "@local_tsl//tsl/platform:tensor_float_32_hdr_lib",
         "@local_xla//xla:xla_data_proto_cc",
-        "@local_xla//xla/client:padding",
-        "@local_xla//xla/client:sharding_builder",
-        "@local_xla//xla/client/lib:conv_grad_size_util",
+        "@local_xla//xla/hlo/builder:padding",
+        "@local_xla//xla/hlo/builder:sharding_builder",
+        "@local_xla//xla/hlo/builder/lib:conv_grad_size_util",
         "@local_xla//xla/hlo/translate/hlo_to_mhlo:attribute_importer",
         "@local_xla//xla/mlir_hlo",
         "@local_xla//xla/mlir_hlo:convert_op_folder",
-        "@local_xla//xla/translate/hlo_to_mhlo:attribute_importer",
         "@local_xla//xla/tsl/platform:status",
         "@stablehlo//:chlo_ops",
     ] + if_static(["@local_tsl//tsl/platform:tensor_float_32_utils"]),
@@ -284,7 +255,6 @@ cc_library(
         ":legalize_stablehlo_custom_call_to_composite",
         ":legalize_tf_xla_call_module_to_stablehlo_pass",
         ":optimize",
-        ":rename_entrypoint_to_main",
         ":smuggle_disallowed_ops",
         ":stablehlo_fuse_convolution_pass",
         ":stablehlo_unfuse_batch_norm_pass",
@@ -293,6 +263,7 @@ cc_library(
         "//tensorflow/compiler/mlir/quantization/stablehlo:bridge_passes",
         "//tensorflow/compiler/mlir/stablehlo:fold_broadcast_pass",
         "//tensorflow/compiler/mlir/stablehlo:fuse_convolution_pass",
+        "//tensorflow/compiler/mlir/stablehlo:rename_entrypoint_to_main",
         "//tensorflow/compiler/mlir/stablehlo:unfuse_batch_norm_pass",
         "//tensorflow/compiler/mlir/tensorflow/transforms:tensorflow_passes",
         "//tensorflow/compiler/mlir/tensorflow/transforms:tf_saved_model_passes",
@@ -353,15 +324,10 @@ cc_library(
 gentbl_cc_library(
     name = "passes_inc_gen",
     compatible_with = get_compatible_with_portable(),
-    tbl_outs = [
-        (
-            [
-                "-gen-pass-decls",
-                "-name=OdmlStablehlo",
-            ],
-            "transforms/stablehlo_passes.h.inc",
-        ),
-    ],
+    tbl_outs = {"transforms/stablehlo_passes.h.inc": [
+        "-gen-pass-decls",
+        "-name=OdmlStablehlo",
+    ]},
     tblgen = "@llvm-project//mlir:mlir-tblgen",
     td_file = "transforms/stablehlo_passes.td",
     deps = ["@llvm-project//mlir:PassBaseTdFiles"],
@@ -649,12 +615,7 @@ cc_library(
 gentbl_cc_library(
     name = "hlo_legalize_tf_inc_gen",
     compatible_with = get_compatible_with_portable(),
-    tbl_outs = [
-        (
-            ["-gen-rewriters"],
-            "transforms/generated_legalize_hlo.inc",
-        ),
-    ],
+    tbl_outs = {"transforms/generated_legalize_hlo.inc": ["-gen-rewriters"]},
     tblgen = "@llvm-project//mlir:mlir-tblgen",
     td_file = "transforms/legalize_hlo_patterns.td",
     deps = [
@@ -668,12 +629,7 @@ gentbl_cc_library(
 gentbl_cc_library(
     name = "hlo_legalize_tflite_inc_gen",
     compatible_with = get_compatible_with_portable(),
-    tbl_outs = [
-        (
-            ["-gen-rewriters"],
-            "transforms/generated_tflite_legalize_hlo.inc",
-        ),
-    ],
+    tbl_outs = {"transforms/generated_tflite_legalize_hlo.inc": ["-gen-rewriters"]},
     tblgen = "@llvm-project//mlir:mlir-tblgen",
     td_file = "transforms/tflite_legalize_hlo_patterns.td",
     deps = [
@@ -731,12 +687,7 @@ cc_library(
 gentbl_cc_library(
     name = "prepare_hlo_inc_gen",
     compatible_with = get_compatible_with_portable(),
-    tbl_outs = [
-        (
-            ["-gen-rewriters"],
-            "transforms/generated_prepare_hlo.inc",
-        ),
-    ],
+    tbl_outs = {"transforms/generated_prepare_hlo.inc": ["-gen-rewriters"]},
     tblgen = "@llvm-project//mlir:mlir-tblgen",
     td_file = "transforms/prepare_hlo.td",
     deps = [
@@ -982,12 +933,7 @@ cc_library(
 gentbl_cc_library(
     name = "composite_lowering_inc_gen",
     compatible_with = get_compatible_with_portable(),
-    tbl_outs = [
-        (
-            ["-gen-rewriters"],
-            "transforms/generated_composite_lowering.inc",
-        ),
-    ],
+    tbl_outs = {"transforms/generated_composite_lowering.inc": ["-gen-rewriters"]},
     tblgen = "@llvm-project//mlir:mlir-tblgen",
     td_file = "transforms/composite_lowering_patterns.td",
     deps = [

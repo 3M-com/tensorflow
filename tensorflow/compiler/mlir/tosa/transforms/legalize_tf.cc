@@ -131,6 +131,7 @@ DECL_CONVERT_OP(ResizeNearestNeighbor);
 DECL_CONVERT_OP(Gather);
 DECL_CONVERT_OP(GatherV2);
 DECL_CONVERT_OP(GatherNd);
+DECL_CONVERT_OP(ScatterNd);
 DECL_CONVERT_OP(SelectV2);
 DECL_CONVERT_OP(SpaceToDepth);
 DECL_CONVERT_OP(DepthToSpace);
@@ -1122,7 +1123,7 @@ LogicalResult ConvertTFAllOp::matchAndRewrite(Operation* op,
     return failure();
 
   std::optional<Value> result = convertReduceAllOp(
-      rewriter, op, output_type, tf_all_op.getInput(), axes_elems);
+      rewriter, op, output_type, tf_all_op.getInput(), axes_elems, tf_all_op.getKeepDims());
 
   if (!result) return failure();
 
@@ -1144,7 +1145,7 @@ LogicalResult ConvertTFAnyOp::matchAndRewrite(Operation* op,
     return failure();
 
   std::optional<Value> result = convertReduceAnyOp(
-      rewriter, op, output_type, tf_any_op.getInput(), axes_elems);
+      rewriter, op, output_type, tf_any_op.getInput(), axes_elems, tf_any_op.getKeepDims());
 
   if (!result) return failure();
 
@@ -1166,7 +1167,7 @@ LogicalResult ConvertTFMaxOp::matchAndRewrite(Operation* op,
     return failure();
 
   std::optional<Value> result = convertReduceMaxOp(
-      rewriter, op, output_type, tf_max_op.getInput(), axes_elems);
+      rewriter, op, output_type, tf_max_op.getInput(), axes_elems, tf_max_op.getKeepDims());
 
   if (!result) return failure();
 
@@ -1188,7 +1189,7 @@ LogicalResult ConvertTFMinOp::matchAndRewrite(Operation* op,
     return failure();
 
   std::optional<Value> result = convertReduceMinOp(
-      rewriter, op, output_type, tf_min_op.getInput(), axes_elems);
+      rewriter, op, output_type, tf_min_op.getInput(), axes_elems, tf_min_op.getKeepDims());
 
   if (!result) return failure();
 
@@ -1210,7 +1211,7 @@ LogicalResult ConvertTFMeanOp::matchAndRewrite(
     return failure();
 
   std::optional<Value> result = convertReduceMeanOp(
-      rewriter, op, output_type, tf_mean_op.getInput(), axes_elems);
+      rewriter, op, output_type, tf_mean_op.getInput(), axes_elems, tf_mean_op.getKeepDims());
 
   if (!result) return failure();
 
@@ -1232,7 +1233,7 @@ LogicalResult ConvertTFProdOp::matchAndRewrite(
     return failure();
 
   std::optional<Value> result = convertReduceProdOp(
-      rewriter, op, output_type, tf_prod_op.getInput(), axes_elems);
+      rewriter, op, output_type, tf_prod_op.getInput(), axes_elems, tf_prod_op.getKeepDims());
 
   if (!result) return failure();
 
@@ -1254,7 +1255,7 @@ LogicalResult ConvertTFSumOp::matchAndRewrite(Operation* op,
     return failure();
 
   std::optional<Value> result = convertReduceSumOp(
-      rewriter, op, output_type, tf_sum_op.getInput(), axes_elems);
+      rewriter, op, output_type, tf_sum_op.getInput(), axes_elems, tf_sum_op.getKeepDims());
 
   if (!result) return failure();
 
@@ -2001,6 +2002,22 @@ LogicalResult ConvertTFGatherNdOp::matchAndRewrite(
   return success();
 }
 
+LogicalResult ConvertTFScatterNdOp::matchAndRewrite(
+    Operation* op, PatternRewriter& rewriter) const {
+  auto tfl_scatternd_op = cast<TF::ScatterNdOp>(op);
+
+  const std::optional<Value> result = convertScatterNdOp(
+      rewriter, op, tfl_scatternd_op.getResult(), tfl_scatternd_op.getIndices(),
+      tfl_scatternd_op.getUpdates(), tfl_scatternd_op.getShape());
+
+  if (!result) {
+    return failure();
+  }
+  rewriter.replaceOp(op, {result.value()});
+
+  return success();
+}
+
 LogicalResult ConvertTFSelectV2Op::matchAndRewrite(
     Operation* op, PatternRewriter& rewriter) const {
   auto tf_sel_op = cast<TF::SelectV2Op>(op);
@@ -2620,6 +2637,7 @@ void populateLegalizeTFPatterns(MLIRContext* ctx, RewritePatternSet& patterns) {
   patterns.add<ConvertTFGatherOp>(ctx);
   patterns.add<ConvertTFGatherV2Op>(ctx);
   patterns.add<ConvertTFGatherNdOp>(ctx);
+  patterns.add<ConvertTFScatterNdOp>(ctx);
   patterns.add<ConvertTFSelectV2Op>(ctx);
   patterns.add<ConvertTFSpaceToDepthOp>(ctx);
   patterns.add<ConvertTFDepthToSpaceOp>(ctx);

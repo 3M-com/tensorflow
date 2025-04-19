@@ -2,7 +2,7 @@
 #   Memory Space Assignment service implementation.
 
 load(
-    "//xla:xla.bzl",
+    "//xla:xla.default.bzl",
     "xla_cc_test",
 )
 load("//xla/tsl:tsl.bzl", "internal_visibility")
@@ -38,7 +38,6 @@ cc_library(
     deps = [
         ":algorithm",
         ":allocation",
-        ":cost_analysis",
         ":memory_space_assignment_proto_cc",
         ":options",
         ":simulator",
@@ -188,7 +187,9 @@ cc_library(
         "//xla/service/cost_modelling:op_cost",
         "//xla/tests:hlo_test_base",
         "//xla/tsl/lib/core:status_test_util",
+        "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/types:span",
         "@local_tsl//tsl/platform:status",
         "@local_tsl//tsl/platform:statusor",
         "@local_tsl//tsl/platform:test",
@@ -595,6 +596,7 @@ cc_library(
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/container:inlined_vector",
         "@com_google_absl//absl/functional:any_invocable",
+        "@com_google_absl//absl/hash",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/memory",
@@ -635,7 +637,6 @@ cc_library(
     hdrs = ["allocation_value.h"],
     deps = [
         ":allocation",
-        "//xla:shape_tree",
         "//xla:shape_util",
         "//xla/hlo/ir:hlo",
         "//xla/service:hlo_value",

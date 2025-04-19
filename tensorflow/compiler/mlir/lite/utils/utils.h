@@ -23,12 +23,15 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "mlir/Dialect/Traits.h"  // from @llvm-project
 #include "mlir/IR/Attributes.h"  // from @llvm-project
+#include "mlir/IR/Builders.h"  // from @llvm-project
 #include "mlir/IR/BuiltinAttributeInterfaces.h"  // from @llvm-project
 #include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
 #include "mlir/IR/BuiltinTypeInterfaces.h"  // from @llvm-project
@@ -59,13 +62,28 @@ inline bool IsPosInfiniteValue(APFloat value) {
   return value.isInfinity();
 }
 
+// Returns 1D 32-bit dense elements attribute with the given values.
+inline DenseIntElementsAttr GetI32ElementsAttr(ArrayRef<int32_t> values,
+                                               Builder* builder) {
+  RankedTensorType ty = mlir::RankedTensorType::get(
+      {static_cast<int32_t>(values.size())}, builder->getIntegerType(32));
+  return DenseIntElementsAttr::get(ty, values);
+}
+
+inline DenseIntElementsAttr GetI64ElementsAttr(ArrayRef<int64_t> values,
+                                               Builder* builder) {
+  RankedTensorType ty = RankedTensorType::get(
+      {static_cast<int64_t>(values.size())}, builder->getIntegerType(64));
+  return DenseIntElementsAttr::get(ty, values);
+}
+
 // Returns true if all tensor value in `values` has static shape and same shape.
 inline bool OpHasSameStaticShapes(Operation* op) {
   auto values = op->getOperands();
   int operand_num = 0;
   ArrayRef<int64_t> shape;
   for (Value value : values) {
-    auto shaped_type = value.getType().dyn_cast<ShapedType>();
+    auto shaped_type = mlir::dyn_cast<ShapedType>(value.getType());
     if (!shaped_type || !shaped_type.hasStaticShape()) {
       return false;
     }
@@ -165,7 +183,7 @@ inline bool IsTransposeTrivial(llvm::ArrayRef<int64_t> input_shape,
 // Returns the permutation that maps the input shape to the output shape.
 // This is only valid for trivial reshape ops.
 inline DenseElementsAttr GetPermutationFromTrivialReshape(
-    ShapedType input_type, ShapedType output_type) {
+    mlir::ShapedType input_type, mlir::ShapedType output_type) {
   ArrayRef<int64_t> in_shape = input_type.getShape();
   ArrayRef<int64_t> out_shape = output_type.getShape();
 
@@ -209,8 +227,8 @@ inline DenseElementsAttr GetPermutationFromTrivialReshape(
 // Returns true if the reshape op is equivalent to a transpose op.
 // This is true if the reshape op is a trivial reshape op, meaning no change in
 // the order of non-identity dimensions.
-inline bool IsReshapeEquivalentToTranspose(ShapedType input_type,
-                                           ShapedType output_type) {
+inline bool IsReshapeEquivalentToTranspose(mlir::ShapedType input_type,
+                                           mlir::ShapedType output_type) {
   std::vector<int64_t> in_shape{input_type.getShape().vec()};
   std::vector<int64_t> out_shape{output_type.getShape().vec()};
 
@@ -229,14 +247,14 @@ inline bool IsReshapeEquivalentToTranspose(ShapedType input_type,
 
 // Checks if all elements in the constant attribute value are 1.
 inline bool IsAllOnesConstant(Attribute value) {
-  auto values = value.cast<DenseElementsAttr>().getValues<int32_t>();
+  auto values = mlir::cast<DenseElementsAttr>(value).getValues<int32_t>();
   return !std::any_of(values.begin(), values.end(),
                       [](int32_t element_value) { return element_value != 1; });
 }
 
 // Checks if all elements in the constant attribute value are non-negative.
 inline bool HasNonNegativeValues(Attribute value) {
-  auto values = value.cast<DenseElementsAttr>().getValues<APInt>();
+  auto values = mlir::cast<DenseElementsAttr>(value).getValues<APInt>();
   return !std::any_of(
       values.begin(), values.end(),
       [](const APInt& element_value) { return element_value.isNegative(); });
@@ -244,8 +262,8 @@ inline bool HasNonNegativeValues(Attribute value) {
 
 // Utility function to get the offset between two dense attribute values.
 inline TypedAttr GetOffSet(Attribute begin, Attribute end) {
-  auto begin_values = begin.cast<DenseElementsAttr>().getValues<int32_t>();
-  auto end_values = end.cast<DenseElementsAttr>().getValues<int32_t>();
+  auto begin_values = mlir::cast<DenseElementsAttr>(begin).getValues<int32_t>();
+  auto end_values = mlir::cast<DenseElementsAttr>(end).getValues<int32_t>();
 
   SmallVector<int32_t> offsets;
   if (begin_values.size() == end_values.size()) {
@@ -283,7 +301,7 @@ inline bool AreLastTwoDimsTransposed(Value permutation) {
 
 // Gets the new type after transposing the last 2 dimensions.
 inline Type TransposeLastTwoDims(Type type) {
-  auto shaped_type = type.dyn_cast<ShapedType>();
+  auto shaped_type = mlir::dyn_cast<ShapedType>(type);
   if (!shaped_type.hasStaticShape() || shaped_type.getRank() < 2) {
     return nullptr;
   }
@@ -299,9 +317,9 @@ inline Type TransposeLastTwoDims(Type type) {
 
 // Returns a ShapedType for a permutation and the shape of input after
 // applying the permutation to the given shape through a transpose.
-inline ShapedType GetTransposedType(Value input,
-                                    llvm::ArrayRef<int64_t> permutation_array) {
-  auto input_type = input.getType().cast<ShapedType>();
+inline mlir::ShapedType GetTransposedType(
+    Value input, llvm::ArrayRef<int64_t> permutation_array) {
+  auto input_type = mlir::cast<ShapedType>(input.getType());
   if (permutation_array.size() != input_type.getRank()) {
     return nullptr;
   }
@@ -341,39 +359,65 @@ inline DenseElementsAttr GetExpandedShapeAttr(Value input_val, int n) {
 
 // Return the resultant shape type if the shape of the supplied attribute/value
 // is expanded by n leading 1s'.
-inline ShapedType GetExpandedShapeType(Value input_val, int n) {
+inline mlir::ShapedType GetExpandedShapeType(Value input_val, int n) {
   auto expanded_shape = GetExpandedShape(input_val, n);
   return RankedTensorType::get(
       SmallVector<int64_t>{expanded_shape.begin(), expanded_shape.end()},
       mlir::cast<ShapedType>(input_val.getType()).getElementType());
 }
 
-// Returns shape of a ranked tensor.
-// Precondition: output_val's is ranked tensor.
-// Returns a truncated shape when `truncate` is set to true.
-inline DenseElementsAttr GetShape(Value output_val, bool truncate = false) {
-  auto output_shape = output_val.getType().dyn_cast<ShapedType>().getShape();
+// Returns shape of a ranked tensor as a SmallVector.
+// Precondition: input_value's is ranked tensor.
+// Returns a squeezed shape when `squeeze_leading_ones` is set to true.
+inline SmallVector<int32_t> GetShape(Value input_value,
+                                     bool squeeze_leading_ones = false) {
+  auto output_shape =
+      mlir::dyn_cast<ShapedType>(input_value.getType()).getShape();
 
   SmallVector<int32_t> shape;
   shape.reserve(output_shape.size());
 
-  bool needs_truncation = true;
+  bool can_squeeze = true;
   for (size_t dim_idx = 0; dim_idx < output_shape.size(); ++dim_idx) {
     int64_t dim = output_shape[dim_idx];
-    if (truncate && needs_truncation && dim == 1) {
+    if (squeeze_leading_ones && can_squeeze && dim == 1) {
       continue;
-    } else if (needs_truncation && dim != 1) {
-      needs_truncation = false;
+    } else if (can_squeeze && dim != 1) {
+      can_squeeze = false;
     }
     shape.push_back(ShapedType::isDynamic(dim) ? -1
                                                : static_cast<int32_t>(dim));
   }
+  return shape;
+}
+
+// Returns shape of a ranked tensor as a DenseElementsAttr.
+// Precondition: input_value's is ranked tensor.
+// Returns a squeezed shape when `squeeze_leading_ones` is set to true.
+inline DenseElementsAttr GetShapeAttr(Value input_value,
+                                      bool squeeze_leading_ones = false) {
+  SmallVector<int32_t> shape = GetShape(input_value, squeeze_leading_ones);
 
   return mlir::DenseElementsAttr::get(
       RankedTensorType::get(
           {static_cast<int>(shape.size())},
-          mlir::IntegerType::get(output_val.getContext(), 32)),
+          mlir::IntegerType::get(input_value.getContext(), 32)),
       llvm::ArrayRef(shape));
+}
+
+// Returns the value of a constant attribute as an int array, if the value is
+// not a constant, returns an error status.
+inline absl::StatusOr<SmallVector<int32_t>> GetValueAsIntArray(Value value) {
+  DenseElementsAttr values_const_attr;
+  if (!matchPattern(value, m_Constant(&values_const_attr))) {
+    return absl::InvalidArgumentError("Value is not a constant.");
+  }
+
+  SmallVector<int32_t> values;
+  for (const auto& value : values_const_attr.getValues<APInt>()) {
+    values.push_back(value.getSExtValue());
+  }
+  return values;
 }
 
 ////////////////////////////////////////////////////////////////////////////////

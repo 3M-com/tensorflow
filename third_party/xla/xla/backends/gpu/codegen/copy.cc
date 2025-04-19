@@ -15,10 +15,14 @@ limitations under the License.
 #include "xla/backends/gpu/codegen/copy.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <vector>
 
+#include "absl/container/inlined_vector.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "xla/backends/gpu/codegen/fusion_emitter.h"
@@ -29,11 +33,11 @@ limitations under the License.
 #include "xla/hlo/utils/hlo_traversal.h"
 #include "xla/literal_util.h"
 #include "xla/service/buffer_assignment.h"
-#include "xla/service/call_graph.h"
 #include "xla/service/gpu/ir_emission_utils.h"
 #include "xla/service/gpu/ir_emitter_context.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
+#include "xla/xla_data.pb.h"
 #include "tsl/platform/errors.h"
 #include "tsl/platform/statusor.h"
 
@@ -129,27 +133,31 @@ absl::StatusOr<FusionEmissionResult> DynamicMemcpyFusion::Emit(
 
 namespace {
 
+// Returns the slice size in the given dimension for a dynamic-(update-)slice
+// instruction.
+int64_t GetSliceSize(const HloInstruction* slice, int dim) {
+  if (slice->opcode() == HloOpcode::kDynamicSlice) {
+    return slice->dynamic_slice_sizes()[dim];
+  }
+  CHECK_EQ(slice->opcode(), HloOpcode::kDynamicUpdateSlice);
+  return slice->operand(1)->shape().dimensions(dim);
+}
+
 // Whether the offset in the given dimension of the slice operation is
 // guaranteed to be clamped to 0. This is the case if the slice size is the
 // same as the size of the dimension in the unsliced shape.
 bool IsZeroOffset(const HloInstruction* slice, int dim) {
-  if (slice->opcode() == HloOpcode::kDynamicSlice) {
-    return slice->dynamic_slice_sizes()[dim] ==
-           slice->operand(0)->shape().dimensions(dim);
-  }
-  CHECK_EQ(slice->opcode(), HloOpcode::kDynamicUpdateSlice);
-  return slice->operand(1)->shape().dimensions(dim) ==
-         slice->operand(0)->shape().dimensions(dim);
+  return GetSliceSize(slice, dim) == slice->operand(0)->shape().dimensions(dim);
 }
 
 std::vector<const HloInstruction*> GetCallStack(
-    const HloInstruction& instruction, const CallGraph& call_graph) {
+    const HloInstruction& instruction) {
   const HloInstruction* current = &instruction;
   std::vector<const HloInstruction*> stack;
   while (current) {
     stack.push_back(current);
 
-    auto callers = call_graph.GetComputationCallers(current->parent());
+    auto callers = current->parent()->caller_instructions();
     if (callers.size() == 1) {
       current = callers[0];
     } else {
@@ -203,7 +211,7 @@ bool DynamicMemcpyFusion::IsCandidateFusion(
     }
   }
 
-  int rank = root->operand(0)->shape().rank();
+  int rank = root->operand(0)->shape().dimensions().size();
   for (int i = 0; i < rank; ++i) {
     auto* operand = root->operand(i + first_offset_index);
     if (!IsZeroOffset(root, i) && operand->opcode() != HloOpcode::kConstant &&
@@ -220,7 +228,7 @@ bool DynamicMemcpyFusion::IsCandidateFusion(
 
 std::optional<DynamicMemcpyThunk::MemcpyDescriptor>
 DynamicMemcpyFusion::GetMemcpyDescriptorForFusion(
-    const HloFusionInstruction& fusion, const CallGraph& call_graph) {
+    const HloFusionInstruction& fusion) {
   if (!IsCandidateFusion(fusion)) {
     return std::nullopt;
   }
@@ -234,8 +242,8 @@ DynamicMemcpyFusion::GetMemcpyDescriptorForFusion(
   }
 
   int first_offset_index = GetFirstOffsetOperandIndex(slice);
-  int rank = slice_input_shape.rank();
-  auto stack = GetCallStack(fusion, call_graph);
+  int rank = slice_input_shape.dimensions().size();
+  auto stack = GetCallStack(fusion);
 
   VLOG(5) << "Preconditions passed, trying to build a memcpy descriptor.";
   DynamicMemcpyThunk::MemcpyDescriptor descriptor;
@@ -260,6 +268,10 @@ DynamicMemcpyFusion::GetMemcpyDescriptorForFusion(
         return std::nullopt;
       }
 
+      // Clamp the offset to [0; dimension size - slice size].
+      int64_t max =
+          slice->operand(0)->shape().dimensions(i) - GetSliceSize(slice, i);
+      *value = std::max<int64_t>(0, std::min(*value, max));
       VLOG(5) << "Offset for dimension " << i << " is constant: " << *value
               << ".";
       static_offset += *value * (*strides)[i];
